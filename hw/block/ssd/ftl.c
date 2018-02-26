@@ -29,6 +29,7 @@
 #include "ssd_io_manager.h"
 #include "ftl_gc_manager.h"
 #include "ssd.h"
+#include "firm_buffer_manager.h"
 #include "vssim_config_manager.h"
 #ifndef VSSIM_BENCH
 //#include "qemu-kvm.h"
@@ -104,7 +105,7 @@ void FTL_INIT(struct ssdstate *ssd)
 		INIT_CACHE();
 #endif
 #ifdef FIRM_IO_BUFFER
-		INIT_IO_BUFFER();
+		INIT_IO_BUFFER(ssd);
 #endif
 #ifdef MONITOR_ON
 		INIT_LOG_MANAGER();

@@ -233,11 +233,10 @@ int64_t SSD_WRITE(struct ssdstate *ssd, unsigned int length, int64_t sector_nb)
     #endif
 
 #elif defined FIRM_IO_BUFFER
-	DEQUEUE_COMPLETED_READ();
-	if(EVENT_QUEUE_IS_FULL(WRITE, length)){
-		SECURE_WRITE_BUFFER();
-	}
-	ENQUEUE_IO(WRITE, sector_nb, length);
+	ADD_REQUEST(WRITE, length, sector_nb);
+    BUFFER_MANAGEMENT(ssd);
+    DISTRIBUTE(ssd);
+    PROCESS(ssd);
 #else
 	return FTL_WRITE(ssd, sector_nb, length);
 #endif
@@ -277,11 +276,10 @@ int64_t SSD_READ(struct ssdstate *ssd, unsigned int length, int64_t sector_nb)
     #endif
 
 #elif defined FIRM_IO_BUFFER
-	DEQUEUE_COMPLETED_READ();
-	if(EVENT_QUEUE_IS_FULL(READ, length)){
-		SECURE_READ_BUFFER();
-	}
-	ENQUEUE_IO(READ, sector_nb, length);
+	ADD_REQUEST(READ, length, sector_nb);
+    BUFFER_MANAGEMENT(ssd);
+    DISTRIBUTE(ssd);
+    PROCESS(ssd);
 #else
 	return FTL_READ(ssd, sector_nb, length);
 #endif

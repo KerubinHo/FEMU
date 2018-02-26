@@ -94,8 +94,8 @@
 #include "ssd_log_manager.h"
 
 /* HEADER - FIRMWARE */
-#include "firm_buffer_manager.h"
 #include "avlTree.h"
+#include "firm_buffer_manager.h"
 
 /* HEADER - FTL Dependency */
 #if defined PAGE_MAP || defined BLOCK_MAP

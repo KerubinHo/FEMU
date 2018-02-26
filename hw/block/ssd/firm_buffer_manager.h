@@ -8,6 +8,8 @@
 #ifndef _SSD_BUFFER_MANAGER_H_
 #define _SSD_BUFFER_MANAGER_H_
 
+#include "common.h"
+
 struct request{
 	int64_t lsn;                  //请求的起始地址，逻辑地址
 	unsigned int size;                 //请求的大小，既多少个扇区
@@ -24,8 +26,11 @@ struct sub_request{
 	int size;
     unsigned int lpn;
     int operation;
+	unsigned int state;
     unsigned int ppn;                  //分配那个物理子页给这个子请求。在multi_chip_page_mapping中，产生子页请求时可能就知道psn的值，其他时候psn的值由page_map_read,page_map_write等FTL最底层函数产生。
 	struct sub_request *next_subs;    //指向属于同一个request的子请求
+	struct sub_request *update;
+	struct sub_request *next_node;
     int num_channel
 };
 
@@ -55,7 +60,7 @@ typedef struct buffer_group{
 	int flag;			                //indicates if this node is the last 20% of the LRU list	
 }buf_node;
 
-void INIT_IO_BUFFER(void);
+void INIT_IO_BUFFER(struct ssdstate *ssd);
 void TERM_IO_BUFFER(void);
 
 void ADD_REQUEST(int io_type, unsigned int size, int64_t lsn);
@@ -72,4 +77,5 @@ unsigned int transfer_size(struct ssdstate *ssd,int need_distribute,unsigned int
 void PROCESS(struct ssdstate *ssd);
 void PROCESS_READS(struct ssdstate *ssd, unsigned int channel);
 void PROCESS_WRITES(struct ssdstate *ssd, unsigned int channel);
+int freeFunc(TREE_NODE *pNode);
 #endif
