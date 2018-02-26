@@ -10,1116 +10,870 @@
 
 #if 0
 
+struct request *request_queue;
+struct request *request_tail;
+unsigned int request_queue_length;
+struct buffer_info *buffer;
+struct entry *map_entry;
+struct channel_info *channel_head.
+
 event_queue* e_queue;
 event_queue* c_e_queue;
 
-/* Global Variable for IO Buffer */
-void* write_buffer;
-void* read_buffer;
-void* write_buffer_end;
-void* read_buffer_end;
-
-/* Globale Variable for Valid array */
-char* wb_valid_array;
-
-/* Pointers for Write Buffer */
-void* ftl_write_ptr;
-void* sata_write_ptr;
-void* write_limit_ptr;
-
-/* Pointers for Read Buffer */
-void* ftl_read_ptr;
-void* sata_read_ptr;
-void* read_limit_ptr;
-event_queue_entry* last_read_entry;
-
-int empty_write_buffer_frame;
-int empty_read_buffer_frame;
-
-#ifdef SSD_THREAD
-int r_queue_full = 0;
-int w_queue_full = 0;
-pthread_t ssd_thread_id;
-pthread_cond_t eq_ready = PTHREAD_COND_INITIALIZER;
-pthread_mutex_t eq_lock = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t cq_lock = PTHREAD_MUTEX_INITIALIZER;
-#endif
-
-//TEMPs
-int temp_count1 = 0;
-int64_t temp_count2 = 0;
-//TEMPe
-
 void INIT_IO_BUFFER(void)
 {
-	/* Allocation event queue structure */
-	e_queue = (event_queue*)calloc(1, sizeof(event_queue));
-	if(e_queue == NULL){
-		printf("ERROR [%s] Allocation event queue fail.\n",__FUNCTION__);
-		return;
-	}
-	else{	/* Initialization event queue structure */
-		e_queue->entry_nb = 0;
-		e_queue->head = NULL;
-		e_queue->tail = NULL;
-	}
+    unsigned int page_num;
+    request_queue = NULL;
+    request_tail = NULL;
+    request_queue_length = 0;;
 
-	/* Initialization valid array of event queue */
-	INIT_WB_VALID_ARRAY();
+    page_num = ssd->ssdparams->PAGES_IN_SSD;
 
-	/* Allocation completed event queue structure */
-	c_e_queue = (event_queue*)calloc(1, sizeof(event_queue));
-	if(c_e_queue == NULL){
-		printf("ERROR [%s] Allocation completed event queue fail.\n",__FUNCTION__);
-		return;
-	}
-	else{	/* Initialization event queue structure */
-		c_e_queue->entry_nb = 0;
-		c_e_queue->head = NULL;
-		c_e_queue->tail = NULL;
-	}
-
-	/* Allocation Write Buffer in DRAM */
-	write_buffer = (void*)calloc(WRITE_BUFFER_FRAME_NB, SECTOR_SIZE);
-	write_buffer_end = write_buffer + WRITE_BUFFER_FRAME_NB*SECTOR_SIZE;	
-
-	/* Allocation Read Buffer in DRAM */
-	read_buffer = (void*)calloc(READ_BUFFER_FRAME_NB, SECTOR_SIZE);
-	read_buffer_end = read_buffer + READ_BUFFER_FRAME_NB*SECTOR_SIZE;	
-
-	if(write_buffer == NULL || read_buffer == NULL){
-		printf("ERROR [%s] Allocation IO Buffer Fail.\n",__FUNCTION__);
-		return;
-	}
-	
-	/* Initialization Buffer Pointers */
-	ftl_write_ptr = write_buffer;
-	sata_write_ptr = write_buffer;
-	write_limit_ptr = write_buffer;
-
-	ftl_read_ptr = read_buffer;
-	sata_read_ptr = read_buffer;
-	read_limit_ptr = read_buffer;
-	last_read_entry = NULL;
-
-	/* Initialization Other Global Variable */
-	empty_write_buffer_frame = WRITE_BUFFER_FRAME_NB;
-	empty_read_buffer_frame = READ_BUFFER_FRAME_NB; 
-
-#ifdef SSD_THREAD
-	pthread_create(&ssd_thread_id, NULL, SSD_THREAD_MAIN_LOOP, NULL);
-    printf("Creating SSD Main Loop Thread ..\n");
-    sleep(5);
-#endif
+    channel_head=(struct channel_info*)malloc(ssd->ssdparams->CHANNEL_NB * sizeof(struct channel_info));
+    memset(channel_head,0,ssd->ssdparams->CHANNEL_NB * sizeof(struct channel_info));
+    buffer = (tAVLTree *)avlTreeCreate((void*)keyCompareFunc , (void *)freeFunc);
+    buffer->max_buffer_sector=WRITE_BUFFER_FRAME_NB;
+    map_entry = (struct entry *)malloc(sizeof(struct entry) * page_num);
+    memset(map_entry,0,sizeof(struct entry) * page_num);
 }
 
 void TERM_IO_BUFFER(void)
 {
-	/* Flush all event in event queue */
-	FLUSH_EVENT_QUEUE_UNTIL(e_queue->tail);
-
 	/* Deallocate Buffer & Event queue */
-	free(write_buffer);
-	free(read_buffer);
-	free(e_queue);
-	free(c_e_queue);
+    int avlTreeDestroy(buffer);
+    free(map_entry);
 }
 
-void INIT_WB_VALID_ARRAY(void)
-{
-	int i;
-	wb_valid_array = (char*)calloc(WRITE_BUFFER_FRAME_NB , sizeof(char));
-	if(wb_valid_array == NULL){
-		printf("[%s] Calloc write buffer valid array fail. \n",__FUNCTION__);
-		return;
+void ADD_REQUEST(int io_type, unsigned int size, int64_t lsn) {
+    struct request *request1;
+
+    request1 = (struct request*)malloc(sizeof(struct request));
+    memset(request1,0, sizeof(struct request));
+
+    request1->operation = io_type;
+	request1->lsn = lsn;
+	request1->size = size;
+	request1->next_node = NULL;
+	request1->distri_flag = 0;              // indicate whether this request has been distributed already
+	request1->subs = NULL;
+	request1->need_distr_flag = NULL;
+	request1->complete_lsn_count=0;         //record the count of lsn served by buffer
+
+    if(request_queue == NULL)          //The queue is empty
+	{
+		request_queue = request1;
+		request_tail = request1;
+		request_queue_length++;
 	}
-
-	for(i=0;i<WRITE_BUFFER_FRAME_NB;i++){
-		wb_valid_array[i] = '0';
-	}
-}
-
-#ifdef SSD_THREAD
-void *SSD_THREAD_MAIN_LOOP(void *arg)
-{
-	while(1){
-		pthread_mutex_lock(&eq_lock);
-
-#if defined SSD_THREAD_MODE_1
-		while(e_queue->entry_nb == 0){
-#ifdef SSD_THREAD_DEBUG
-			printf("[%s] wait signal..\n",__FUNCTION__);
-#endif
-			pthread_cond_wait(&eq_ready, &eq_lock);
-		}
-#ifdef SSD_THREAD_DEBUG
-		printf("[%s] Get up! \n",__FUNCTION__);
-#endif
-		DEQUEUE_IO();
-#elif defined SSD_THREAD_MODE_2
-		while(r_queue_full == 0 && w_queue_full == 0){
-			pthread_cond_wait(&eq_ready, &eq_lock);
-		}
-		if(r_queue_full == 1){
-			SECURE_READ_BUFFER();
-			r_queue_full = 0;
-		}
-		else if(w_queue_full == 1){
-			SECURE_WRITE_BUFFER();
-			w_queue_full = 0;
-		}
-		else{
-			printf("ERROR[%s] Wrong signal \n",__FUNCTION__);
-		}
-#endif
-
-		pthread_mutex_unlock(&eq_lock);
-	}
-}
-#endif
-
-void ENQUEUE_IO(int io_type, int64_t sector_nb, unsigned int length)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-
-#ifdef GET_FIRM_WORKLOAD
-	FILE* fp_workload = fopen("./data/workload_firm.txt","a");
-	struct timeval tv;
-	struct tm *lt;
-	double curr_time;
-	gettimeofday(&tv, 0);
-	lt = localtime(&(tv.tv_sec));
-	curr_time = lt->tm_hour*3600 + lt->tm_min*60 + lt->tm_sec + (double)tv.tv_usec/(double)1000000;
-	if(io_type == READ){
-		fprintf(fp_workload,"%lf %d %u %x R\n",curr_time, sector_nb, length, 1);
-	}
-	else if(io_type == WRITE){
-		fprintf(fp_workload,"%lf %d %u %x W\n",curr_time, sector_nb, length, 0);
-	}
-	fclose(fp_workload);
-#endif
-
-/* Check event queue depth */
-#ifdef GET_QUEUE_DEPTH
-	FILE* fp_workload = fopen("./data/queue_depth.txt","a");
-        struct timeval tv;
-        struct tm *lt;
-        double curr_time;
-        gettimeofday(&tv, 0);
-        lt = localtime(&(tv.tv_sec));
-        curr_time = lt->tm_hour*3600 + lt->tm_min*60 + lt->tm_sec + (double)tv.tv_usec/(double)1000000;
-        
-	int n_read_event = COUNT_READ_EVENT();
-	int n_write_event = e_queue->entry_nb - n_read_event;
-	if(io_type == READ)
-		fprintf(fp_workload,"%lf\tR\t%d\t%d\t%d\t%d\t%u\n",curr_time, e_queue->entry_nb, n_read_event, n_write_event, sector_nb, length);
-	else if(io_type == WRITE)
-		fprintf(fp_workload,"%lf\tW\t%d\t%d\t%d\t%d\t%u\n",curr_time, e_queue->entry_nb, n_read_event, n_write_event, sector_nb, length);
-
-        fclose(fp_workload);
-#endif
-
-	if(io_type == READ){
-		ENQUEUE_READ(sector_nb, length);
-	}
-	else if(io_type == WRITE){
-		ENQUEUE_WRITE(sector_nb, length);
-	}
-	else{
-		printf("ERROR[%s] Wrong IO type.\n", __FUNCTION__);
-	}
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-}
-
-void DEQUEUE_IO(void)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	if(e_queue->entry_nb == 0 || e_queue->head == NULL){
-		printf("ERROR[%s] There is no event. \n", __FUNCTION__);
-		return;
-	}
-
-	event_queue_entry* e_q_entry = e_queue->head;
-
-	int io_type = e_q_entry->io_type;
-	int valid = e_q_entry->valid;
-	int64_t sector_nb = e_q_entry->sector_nb;
-	unsigned int length = e_q_entry->length;
-	void* buf = e_q_entry->buf;
-
-	/* Deallocation event queue entry */
-	e_queue->entry_nb--;
-	if(e_queue->entry_nb == 0){
-		e_queue->head = NULL;
-		e_queue->tail = NULL;
-	}
-	else{
-		e_queue->head = e_q_entry->next;
-	}
-
-	if(e_q_entry->io_type == WRITE){
-		free(e_q_entry);
-	}
-	else{
-		if(e_q_entry == last_read_entry){
-			last_read_entry = NULL;
-		}
-	}
-
-	if(valid == VALID){	
-
-		/* Call FTL Function */
-		if(io_type == READ){
-			if(buf != NULL){
-				/* The data is already read from write buffer */
-			}
-			else{
-				/* Allocate read pointer */
-				e_q_entry->buf = ftl_read_ptr;
-
-				FTL_READ(sector_nb, length);
-			}
-		}
-		else if(io_type == WRITE){
-			FTL_WRITE(sector_nb, length);
-		}
-		else{
-			printf("ERROR[%s] Invalid IO type. \n",__FUNCTION__);
-		}
-	}
-
-#ifdef SSD_THREAD
-	pthread_mutex_lock(&cq_lock);
-#endif
-	if(io_type == READ){
-		/* Move event queue entry to completed event queue */
-		e_q_entry->next = NULL;
-		if(c_e_queue->entry_nb == 0){
-			c_e_queue->head = e_q_entry;
-			c_e_queue->tail = e_q_entry;
-		}
-		else{
-			c_e_queue->tail->next = e_q_entry;
-			c_e_queue->tail = e_q_entry;
-		}
-		c_e_queue->entry_nb++;
-	}
-
-#ifdef SSD_THREAD
-	pthread_mutex_unlock(&cq_lock);
-#endif
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-}
-
-void DEQUEUE_COMPLETED_READ(void)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	
-	if(c_e_queue->entry_nb == 0 || c_e_queue->head == NULL){
-#ifdef FIRM_IO_BUF_DEBUG
-		printf("[%s] There is no completed read event. \n",__FUNCTION__);
-#endif
-		return;
-	}
-
-	event_queue_entry* c_e_q_entry = c_e_queue->head;
-	event_queue_entry* temp_c_e_q_entry = NULL;
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] entry number %d\n",__FUNCTION__, c_e_queue->entry_nb);
-#endif
-
-	while(c_e_q_entry != NULL){
-
-		/* Read data from buffer to host */
-		READ_DATA_FROM_BUFFER_TO_HOST(c_e_q_entry);
-
-		/* Remove completed read IO from queue */
-		temp_c_e_q_entry = c_e_q_entry;
-		c_e_q_entry = c_e_q_entry->next;
-
-		/* Update completed event queue data */
-		c_e_queue->entry_nb--;
-
-		/* Deallication completed read IO */
-		free(temp_c_e_q_entry);
-	}
-
-	if(c_e_queue->entry_nb != 0){
-		printf("ERROR[%s] The entry number should be 0.\n",__FUNCTION__);
-	}
-	else{
-		c_e_queue->head = NULL;
-		c_e_queue->tail = NULL;
-	}
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-}
-
-void ENQUEUE_READ(int64_t sector_nb, unsigned int length)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	void* p_buf = NULL;
-	event_queue_entry* ret_e_q_entry = NULL;
-	event_queue_entry* new_e_q_entry = NULL;
-	event_queue_entry* temp_e_q_entry = calloc(1, sizeof(event_queue_entry));
-
-	/* Make New Read Event */
-	new_e_q_entry = ALLOC_NEW_EVENT(READ, sector_nb, length, p_buf);
-
-	if(e_queue->entry_nb == 0){
-		e_queue->head = new_e_q_entry;
-		e_queue->tail = new_e_q_entry;
-		last_read_entry = new_e_q_entry;
-	}
-	else{
-		ret_e_q_entry = CHECK_IO_DEPENDENCY_FOR_READ(sector_nb, length);
-
-		if(ret_e_q_entry != NULL){
-
-			temp_e_q_entry->sector_nb = ret_e_q_entry->sector_nb;
-			temp_e_q_entry->length = ret_e_q_entry->length;
-			temp_e_q_entry->buf = ret_e_q_entry->buf;
-
-			/* If the data can be read from write buffer, */
-			FLUSH_EVENT_QUEUE_UNTIL(ret_e_q_entry);
-
-			if(temp_e_q_entry->sector_nb <= sector_nb && \
-				(sector_nb + length) <= (temp_e_q_entry->sector_nb + temp_e_q_entry->length)){
-
-				new_e_q_entry->buf = ftl_read_ptr;
-				COPY_DATA_TO_READ_BUFFER(new_e_q_entry, temp_e_q_entry);
-			}
-
-			ret_e_q_entry = NULL;
-		}	
-
-		/* If there is no read event */
-		if(last_read_entry == NULL){
-			if(e_queue->entry_nb == 0){
-				e_queue->head = new_e_q_entry;
-				e_queue->tail = new_e_q_entry;
-			}
-			else{
-				new_e_q_entry->next = e_queue->head;
-				e_queue->head = new_e_q_entry;
-			}
-		}
-		else{
-			if(last_read_entry == e_queue->tail){
-				e_queue->tail->next = new_e_q_entry;
-				e_queue->tail = new_e_q_entry;
-			}
-			else{
-				new_e_q_entry->next = last_read_entry->next;
-				last_read_entry->next = new_e_q_entry;
-			}
-		}
-		last_read_entry = new_e_q_entry;
-	}
-	e_queue->entry_nb++;
-
-
-	/* Update empry read buffer frame number */
-	empty_read_buffer_frame -= length;
-
-	free(temp_e_q_entry);
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-}
-
-void ENQUEUE_WRITE(int64_t sector_nb, unsigned int length)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	event_queue_entry* e_q_entry;
-	event_queue_entry* new_e_q_entry = NULL;
-
-	void* p_buf = NULL;
-	int invalid_len;
-
-	int flag_allocated = 0;
-
-	/* Write SATA data to write buffer */
-	p_buf = sata_write_ptr;
-	WRITE_DATA_TO_BUFFER(length);
-
-	if(last_read_entry != NULL)
-		e_q_entry = last_read_entry->next;
 	else
-		e_q_entry = e_queue->head;
-
-	/* Check pending write event */
-	while(e_q_entry != NULL){
-
-		/* Check if there is overwrited event */
-		if(e_q_entry->valid == VALID && CHECK_OVERWRITE(e_q_entry, sector_nb, length)==SUCCESS){
-			
-			/* Update event entry validity */
-			e_q_entry->valid = INVALID;
-
-			/* Update write buffer valid array */
-			UPDATE_WB_VALID_ARRAY(e_q_entry, 'I');
-		}
-
-		e_q_entry = e_q_entry->next;
+	{			
+		request_tail->next_node = request1;	
+		request_tail = request1;			
+		request_queue_length++;
 	}
-	
-	/* Check if the event is prior sequential event */
-	if(CHECK_SEQUENTIALITY(e_queue->tail, sector_nb)==SUCCESS){
-		/* Update the last write event */
-		e_queue->tail->length += length;
-
-		/* Do not need to allocate new event */
-		flag_allocated = 1;
-	}
-	else if(CHECK_IO_DEPENDENCY_FOR_WRITE(e_queue->tail, sector_nb, length)==SUCCESS){
-				
-		/* Calculate Overlapped length */
-		invalid_len = e_queue->tail->sector_nb + e_queue->tail->length - sector_nb;
-
-		/* Invalidate the corresponding write buffer frame */
-		UPDATE_WB_VALID_ARRAY_PARTIAL(e_queue->tail, 'I', invalid_len, 1);
-
-		/* Update the last write event */
-		e_queue->tail->length += (length - invalid_len);			
-
-		/* Do not need to allocate new event */
-		flag_allocated = 1;
-	}
-
-	/* If need to allocate new event */
-	if(flag_allocated == 0){
-		/* Allocate new event at the tail of the event queue */
-		new_e_q_entry = ALLOC_NEW_EVENT(WRITE, sector_nb, length, p_buf);	
-
-		/* Add New IO event entry to event queue */
-		if(e_queue->entry_nb == 0){
-			e_queue->head = new_e_q_entry;
-			e_queue->tail = new_e_q_entry;
-		}
-		else{
-			e_queue->tail->next = new_e_q_entry;
-			e_queue->tail = new_e_q_entry;
-		}
-		e_queue->entry_nb++;
-	}
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
 }
 
-event_queue_entry* ALLOC_NEW_EVENT(int io_type, int64_t sector_nb, unsigned int length, void* buf)
+void BUFFER_MANAGEMENT(struct ssdstate *ssd) {
+    unsigned int j,lsn,lpn,last_lpn,first_lpn,index,complete_flag=0, state,full_page;
+	unsigned int flag=0,need_distb_flag,lsn_flag,flag1=1,active_region_flag=0;           
+	struct request *new_request;
+	struct buffer_group *buffer_node,key;
+	unsigned int mask=0,offset1=0,offset2=0;
+
+	full_page=~(0xffffffff<<ssd->ssdparams->SECTORS_PER_PAGE);
+	
+	new_request=request_tail;
+	lsn=new_request->lsn;
+	lpn=new_request->lsn/ssd->ssdparams->SECTORS_PER_PAGE;
+	last_lpn=(new_request->lsn+new_request->size-1)/ssd->ssdparams->SECTORS_PER_PAGE;
+	first_lpn=new_request->lsn/ssd->ssdparams->SECTORS_PER_PAGE;
+
+	new_request->need_distr_flag=(unsigned int*)malloc(sizeof(unsigned int)*((last_lpn-first_lpn+1)*ssd->ssdparams->SECTORS_PER_PAGE/32+1));
+	memset(new_request->need_distr_flag, 0, sizeof(unsigned int)*((last_lpn-first_lpn+1)*ssd->ssdparams->SECTORS_PER_PAGE/32+1));
+	
+	if(new_request->operation==READ) 
+	{		
+		while(lpn<=last_lpn)      		
+		{
+			/************************************************************************************************
+			 *need_distb_flag表示是否需要执行distribution函数，1表示需要执行，buffer中没有，0表示不需要执行
+             *即1表示需要分发，0表示不需要分发，对应点初始全部赋为1
+			*************************************************************************************************/
+			need_distb_flag=full_page;   
+			key.group=lpn;
+			buffer_node= (struct buffer_group*)avlTreeFind(buffer, (TREE_NODE *)&key);		// buffer node 
+
+			while((buffer_node!=NULL)&&(lsn<(lpn+1)*ssd->ssdparams->SECTORS_PER_PAGE)&&(lsn<=(new_request->lsn+new_request->size-1)))             			
+			{             	
+				lsn_flag=full_page;
+				mask=1 << (lsn%ssd->ssdparams->SECTORS_PER_PAGE);
+				if(mask>31)
+				{
+					printf("the subpage number is larger than 32!add some cases");
+					//getchar(); 		   
+				}
+				else if((buffer_node->stored & mask)==mask)
+				{
+					flag=1;
+					lsn_flag=lsn_flag&(~mask);
+				}
+
+				if(flag==1)				
+				{	//如果该buffer节点不在buffer的队首，需要将这个节点提到队首，实现了LRU算法，这个是一个双向队列。		       		
+					if(buffer->buffer_head!=buffer_node)     
+					{		
+						if(buffer->buffer_tail==buffer_node)								
+						{			
+							buffer_node->LRU_link_pre->LRU_link_next=NULL;					
+							buffer->buffer_tail=buffer_node->LRU_link_pre;							
+						}				
+						else								
+						{				
+							buffer_node->LRU_link_pre->LRU_link_next=buffer_node->LRU_link_next;				
+							buffer_node->LRU_link_next->LRU_link_pre=buffer_node->LRU_link_pre;								
+						}								
+						buffer_node->LRU_link_next=buffer->buffer_head;
+						buffer->buffer_head->LRU_link_pre=buffer_node;
+						buffer_node->LRU_link_pre=NULL;			
+						buffer->buffer_head=buffer_node;													
+					}						
+					buffer->read_hit++;					
+					new_request->complete_lsn_count++;											
+				}		
+				else if(flag==0)
+					{
+						buffer->read_miss_hit++;
+					}
+
+				need_distb_flag=need_distb_flag&lsn_flag;
+				
+				flag=0;		
+				lsn++;						
+			}	
+				
+			index=(lpn-first_lpn)/(32/ssd->ssdparams->SECTORS_PER_PAGE); 			
+			new_request->need_distr_flag[index]=new_request->need_distr_flag[index]|(need_distb_flag<<(((lpn-first_lpn)%(32/ssd->ssdparams->SECTORS_PER_PAGE))*ssd->ssdparams->SECTORS_PER_PAGE));	
+			lpn++;
+			
+		}
+	}  
+	else if(new_request->operation==WRITE)
+	{
+		while(lpn<=last_lpn)           	
+		{	
+			need_distb_flag=full_page;
+			mask=~(0xffffffff<<(ssd->ssdparams->SECTORS_PER_PAGE));
+			state=mask;
+
+			if(lpn==first_lpn)
+			{
+				offset1=ssd->ssdparams->SECTORS_PER_PAGE-((lpn+1)*ssd->ssdparams->SECTORS_PER_PAGE-new_request->lsn);
+				state=state&(0xffffffff<<offset1);
+			}
+			if(lpn==last_lpn)
+			{
+				offset2=ssd->ssdparams->SECTORS_PER_PAGE-((lpn+1)*ssd->ssdparams->SECTORS_PER_PAGE-(new_request->lsn+new_request->size));
+				state=state&(~(0xffffffff<<offset2));
+			}
+			
+			ssd=INSERT_TO_BUFFER(ssd, lpn, state,NULL,new_request);
+			lpn++;
+		}
+	}
+	complete_flag = 1;
+	for(j=0;j<=(last_lpn-first_lpn+1)*ssd->ssdparams->SECTORS_PER_PAGE/32;j++)
+	{
+		if(new_request->need_distr_flag[j] != 0)
+		{
+			complete_flag = 0;
+		}
+	}
+
+	/*************************************************************
+	*如果请求已经被全部由buffer服务，该请求可以被直接响应，输出结果
+	*这里假设dram的服务时间为1000ns
+	**************************************************************/
+	if((complete_flag == 1)&&(new_request->subs==NULL))               
+	{
+		//new_request->begin_time=ssd->current_time;
+		new_request->response_time=1000;            
+    }
+}
+
+void INSERT_TO_BUFFER(struct ssdstate *ssd, unsigned int lpn, int state, struct sub_request *sub, struct request *req) {
+    	int write_back_count,flag=0;                                                             /*flag表示为写入新数据腾空间是否完成，0表示需要进一步腾，1表示已经腾空*/
+	unsigned int i,lsn,hit_flag,add_flag,sector_count,active_region_flag=0,free_sector=0;
+	struct buffer_group *buffer_node=NULL,*pt,*new_node=NULL,key;
+	struct sub_request *sub_req=NULL,*update=NULL;
+	
+	
+	unsigned int sub_req_state=0, sub_req_size=0,sub_req_lpn=0;
+
+	sector_count=size(state);                                                                /*需要写到buffer的sector个数*/
+	key.group=lpn;
+	buffer_node= (struct buffer_group*)avlTreeFind(buffer, (TREE_NODE *)&key);    /*在平衡二叉树中寻找buffer node*/ 
+    
+	/************************************************************************************************
+	*没有命中。
+	*第一步根据这个lpn有多少子页需要写到buffer，去除已写回的lsn，为该lpn腾出位置，
+	*首先即要计算出free sector（表示还有多少可以直接写的buffer节点）。
+	*如果free_sector>=sector_count，即有多余的空间够lpn子请求写，不需要产生写回请求
+	*否则，没有多余的空间供lpn子请求写，这时需要释放一部分空间，产生写回请求。就要creat_sub_request()
+	*************************************************************************************************/
+	if(buffer_node==NULL)
+	{
+		free_sector=buffer->max_buffer_sector-buffer->buffer_sector_count;   
+		if(free_sector>=sector_count)
+		{
+			flag=1;    
+		}
+		if(flag==0)     
+		{
+			write_back_count=sector_count-free_sector;
+			buffer->write_miss_hit=buffer->write_miss_hit+write_back_count;
+			while(write_back_count>0)
+			{
+				sub_req=NULL;
+				sub_req_state=buffer->buffer_tail->stored; 
+				sub_req_size=size(buffer->buffer_tail->stored);
+				sub_req_lpn=buffer->buffer_tail->group;
+				sub_req=creat_sub_request(ssd,sub_req_lpn,sub_req_size,sub_req_state,req,WRITE);
+				
+				
+				/**********************************************************************************
+				*req不为空，表示这个insert2buffer函数是在buffer_management中调用，传递了request进来
+				*req为空，表示这个函数是在process函数中处理一对多映射关系的读的时候，需要将这个读出
+				*的数据加到buffer中，这可能产生实时的写回操作，需要将这个实时的写回操作的子请求挂在
+				*这个读请求的总请求上
+				***********************************************************************************/
+				if(req!=NULL)                                             
+				{
+				}
+				else    
+				{
+					sub_req->next_subs=sub->next_subs;
+					sub->next_subs=sub_req;
+				}
+                
+				/*********************************************************************
+				*写请求插入到了平衡二叉树，这时就要修改dram的buffer_sector_count；
+				*维持平衡二叉树调用avlTreeDel()和AVL_TREENODE_FREE()函数；维持LRU算法；
+				**********************************************************************/
+				buffer->buffer_sector_count=buffer->buffer_sector_count-sub_req->size;
+				pt = buffer->buffer_tail;
+				avlTreeDel(buffer, (TREE_NODE *) pt);
+				if(buffer->buffer_head->LRU_link_next == NULL){
+					buffer->buffer_head = NULL;
+					buffer->buffer_tail = NULL;
+				}else{
+					buffer->buffer_tail=buffer->buffer_tail->LRU_link_pre;
+					buffer->buffer_tail->LRU_link_next=NULL;
+				}
+				pt->LRU_link_next=NULL;
+				pt->LRU_link_pre=NULL;
+				AVL_TREENODE_FREE(buffer, (TREE_NODE *) pt);
+				pt = NULL;
+				
+				write_back_count=write_back_count-sub_req->size;                            /*因为产生了实时写回操作，需要将主动写回操作区域增加*/
+			}
+		}
+		
+		/******************************************************************************
+		*生成一个buffer node，根据这个页的情况分别赋值个各个成员，添加到队首和二叉树中
+		*******************************************************************************/
+		new_node=NULL;
+		new_node=(struct buffer_group *)malloc(sizeof(struct buffer_group));
+		//alloc_assert(new_node,"buffer_group_node");
+		memset(new_node,0, sizeof(struct buffer_group));
+		
+		new_node->group=lpn;
+		new_node->stored=state;
+		new_node->dirty_clean=state;
+		new_node->LRU_link_pre = NULL;
+		new_node->LRU_link_next=buffer->buffer_head;
+		if(buffer->buffer_head != NULL){
+			buffer->buffer_head->LRU_link_pre=new_node;
+		}else{
+			buffer->buffer_tail = new_node;
+		}
+		buffer->buffer_head=new_node;
+		new_node->LRU_link_pre=NULL;
+		avlTreeAdd(buffer, (TREE_NODE *) new_node);
+		buffer->buffer_sector_count += sector_count;
+	}
+	/****************************************************************************************
+	*在buffer中命中的情况
+	*算然命中了，但是命中的只是lpn，有可能新来的写请求，只是需要写lpn这一page的某几个sub_page
+	*这时有需要进一步的判断
+	*****************************************************************************************/
+	else
+	{
+		for(i=0;i<ssd->ssdparams->SECTORS_PER_PAGE;i++)
+		{
+			/*************************************************************
+			*判断state第i位是不是1
+			*并且判断第i个sector是否存在buffer中，1表示存在，0表示不存在。
+			**************************************************************/
+			if((state>>i)%2!=0)                                                         
+			{
+				lsn=lpn*ssd->ssdparams->SECTORS_PER_PAGE+i;
+				hit_flag=0;
+				hit_flag=(buffer_node->stored)&(0x00000001<<i);
+				
+				if(hit_flag!=0)				                                          /*命中了，需要将该节点移到buffer的队首，并且将命中的lsn进行标记*/
+				{	
+					active_region_flag=1;                                             /*用来记录在这个buffer node中的lsn是否被命中，用于后面对阈值的判定*/
+
+					if(req!=NULL)
+					{
+						if(buffer->buffer_head!=buffer_node)     
+						{				
+							if(buffer->buffer_tail==buffer_node)
+							{				
+								buffer->buffer_tail=buffer_node->LRU_link_pre;
+								buffer_node->LRU_link_pre->LRU_link_next=NULL;					
+							}				
+							else if(buffer_node != buffer->buffer_head)
+							{					
+								buffer_node->LRU_link_pre->LRU_link_next=buffer_node->LRU_link_next;				
+								buffer_node->LRU_link_next->LRU_link_pre=buffer_node->LRU_link_pre;
+							}				
+							buffer_node->LRU_link_next=buffer->buffer_head;	
+							buffer->buffer_head->LRU_link_pre=buffer_node;
+							buffer_node->LRU_link_pre=NULL;				
+							buffer->buffer_head=buffer_node;					
+						}					
+						buffer->write_hit++;
+						req->complete_lsn_count++;                                        /*关键 当在buffer中命中时 就用req->complete_lsn_count++表示往buffer中写了数据。*/					
+					}
+					else
+					{
+					}				
+				}			
+				else                 			
+				{
+					/************************************************************************************************************
+					*该lsn没有命中，但是节点在buffer中，需要将这个lsn加到buffer的对应节点中
+					*从buffer的末端找一个节点，将一个已经写回的lsn从节点中删除(如果找到的话)，更改这个节点的状态，同时将这个新的
+					*lsn加到相应的buffer节点中，该节点可能在buffer头，不在的话，将其移到头部。如果没有找到已经写回的lsn，在buffer
+					*节点找一个group整体写回，将这个子请求挂在这个请求上。可以提前挂在一个channel上。
+					*第一步:将buffer队尾的已经写回的节点删除一个，为新的lsn腾出空间，这里需要修改队尾某节点的stored状态这里还需要
+					*       增加，当没有可以之间删除的lsn时，需要产生新的写子请求，写回LRU最后的节点。
+					*第二步:将新的lsn加到所述的buffer节点中。
+					*************************************************************************************************************/	
+					buffer->write_miss_hit++;
+					
+					if(buffer->buffer_sector_count>=buffer->max_buffer_sector)
+					{
+						if (buffer_node==buffer->buffer_tail)                  /*如果命中的节点是buffer中最后一个节点，交换最后两个节点*/
+						{
+							pt = buffer->buffer_tail->LRU_link_pre;
+							buffer->buffer_tail->LRU_link_pre=pt->LRU_link_pre;
+							buffer->buffer_tail->LRU_link_pre->LRU_link_next=buffer->buffer_tail;
+							buffer->buffer_tail->LRU_link_next=pt;
+							pt->LRU_link_next=NULL;
+							pt->LRU_link_pre=buffer->buffer_tail;
+							buffer->buffer_tail=pt;
+							
+						}
+						sub_req=NULL;
+						sub_req_state=buffer->buffer_tail->stored; 
+						sub_req_size=size(buffer->buffer_tail->stored);
+						sub_req_lpn=buffer->buffer_tail->group;
+						sub_req=creat_sub_request(ssd,sub_req_lpn,sub_req_size,sub_req_state,req,WRITE);
+
+						if(req!=NULL)           
+						{
+							
+						}
+						else if(req==NULL)   
+						{
+							sub_req->next_subs=sub->next_subs;
+							sub->next_subs=sub_req;
+						}
+
+						buffer->buffer_sector_count=buffer->buffer_sector_count-sub_req->size;
+						pt = buffer->buffer_tail;	
+						avlTreeDel(buffer, (TREE_NODE *) pt);
+							
+						/************************************************************************/
+						/* 改:  挂在了子请求，buffer的节点不应立即删除，						*/
+						/*			需等到写回了之后才能删除									*/
+						/************************************************************************/
+						if(buffer->buffer_head->LRU_link_next == NULL)
+						{
+							buffer->buffer_head = NULL;
+							buffer->buffer_tail = NULL;
+						}else{
+							buffer->buffer_tail=buffer->buffer_tail->LRU_link_pre;
+							buffer->buffer_tail->LRU_link_next=NULL;
+						}
+						pt->LRU_link_next=NULL;
+						pt->LRU_link_pre=NULL;
+						AVL_TREENODE_FREE(buffer, (TREE_NODE *) pt);
+						pt = NULL;	
+					}
+
+					                                                                     /*第二步:将新的lsn加到所述的buffer节点中*/	
+					add_flag=0x00000001<<(lsn%ssd->ssdparams->SECTORS_PER_PAGE);
+					
+					if(buffer->buffer_head!=buffer_node)                      /*如果该buffer节点不在buffer的队首，需要将这个节点提到队首*/
+					{				
+						if(buffer->buffer_tail==buffer_node)
+						{					
+							buffer_node->LRU_link_pre->LRU_link_next=NULL;					
+							buffer->buffer_tail=buffer_node->LRU_link_pre;
+						}			
+						else						
+						{			
+							buffer_node->LRU_link_pre->LRU_link_next=buffer_node->LRU_link_next;						
+							buffer_node->LRU_link_next->LRU_link_pre=buffer_node->LRU_link_pre;								
+						}								
+						buffer_node->LRU_link_next=buffer->buffer_head;			
+						buffer->buffer_head->LRU_link_pre=buffer_node;
+						buffer_node->LRU_link_pre=NULL;	
+						buffer->buffer_head=buffer_node;							
+					}					
+					buffer_node->stored=buffer_node->stored|add_flag;		
+					buffer_node->dirty_clean=buffer_node->dirty_clean|add_flag;	
+					buffer->buffer_sector_count++;
+				}			
+
+			}
+		}
+	}
+}
+
+struct sub_request * creat_sub_request(struct ssdstate * ssd,unsigned int lpn,int size,unsigned int state,struct request * req, int io_type)
 {
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	event_queue_entry* new_e_q_entry = calloc(1, sizeof(event_queue_entry));
-	if(new_e_q_entry == NULL){
-		printf("[%s] Allocation new event fail.\n", __FUNCTION__);
+
+	static int seq_number = 0; 
+    int num_flash = 0, num_channel = 0;
+	struct sub_request* sub=NULL,* sub_r=NULL;
+	struct channel_info * p_ch=NULL;
+    int64_t ppn;
+	//struct local * loc=NULL;
+	unsigned int flag=0;
+
+	sub = (struct sub_request*)malloc(sizeof(struct sub_request));                       
+	//alloc_assert(sub,"sub_request");
+	memset(sub,0, sizeof(struct sub_request));
+
+	if(sub==NULL)
+	{
 		return NULL;
 	}
-
-	new_e_q_entry->io_type = io_type;
-	new_e_q_entry->valid = VALID;
-	new_e_q_entry->sector_nb = sector_nb;
-	new_e_q_entry->length = length;
-	new_e_q_entry->buf = buf;
-	new_e_q_entry->next = NULL;
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-	return new_e_q_entry;
-}
-
-void WRITE_DATA_TO_BUFFER(unsigned int length)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-
-	/* Write Data to Write Buffer Frame */
-	INCREASE_WB_SATA_POINTER(length);
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-}
-
-void READ_DATA_FROM_BUFFER_TO_HOST(event_queue_entry* c_e_q_entry)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	if(sata_read_ptr != c_e_q_entry->buf){
-		printf("ERROR [%s] sata pointer is different from entry pointer.\n",__FUNCTION__);
-	}
-
-	/* Read the buffer data and increase SATA pointer */
-	INCREASE_RB_SATA_POINTER(c_e_q_entry->length);
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-}
-
-void COPY_DATA_TO_READ_BUFFER(event_queue_entry* dst_entry, event_queue_entry* src_entry)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	if(dst_entry == NULL || src_entry == NULL){
-		printf("[%s] Null pointer error.\n",__FUNCTION__);
-		return;
-	}
-
-	int count = 0;
-	int offset;
-	void* dst_buf;	// new read entry
-	void* src_buf;  // write entry
-
-	int64_t dst_sector_nb = dst_entry->sector_nb;
-	int64_t src_sector_nb = src_entry->sector_nb;
-	unsigned int dst_length = dst_entry->length;
-
-	/* Update read entry buffer pointer */	
-	dst_buf = dst_entry->buf; 
-
-	/* Calculate write buffer frame address */
-	src_buf = src_entry->buf;
-	offset = dst_sector_nb - src_sector_nb;
-
-
-	while(count != offset){
-
-		if(GET_WB_VALID_ARRAY_ENTRY(src_buf)!='I'){
-			count++;
-		}
-
-		src_buf = src_buf + SECTOR_SIZE;
-		if(src_buf == write_buffer_end){
-			src_buf = write_buffer;
-		}
-	}
-
-	count = 0;
-	while(count != dst_length){
-		if(GET_WB_VALID_ARRAY_ENTRY(src_buf)=='I'){
-			src_buf = src_buf + SECTOR_SIZE;
-			if(src_buf == write_buffer_end){
-				src_buf = write_buffer;
-			}
-			continue;
-		}
-
-		/* Copy Write Buffer Data to Read Buffer */
-		memcpy(dst_buf, src_buf, SECTOR_SIZE);
-
-		/* Increase offset */
-		dst_buf = dst_buf + SECTOR_SIZE;
-		src_buf = src_buf + SECTOR_SIZE;
-
-		ftl_read_ptr = ftl_read_ptr + SECTOR_SIZE;
-
-		if(dst_buf == read_buffer_end){
-			dst_buf = read_buffer;
-			ftl_read_ptr = read_buffer;
-		}
-		if(src_buf == write_buffer_end){
-			src_buf = write_buffer;
-		}
-		count++;
-	}
-
-	INCREASE_RB_LIMIT_POINTER();
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-}
-
-void FLUSH_EVENT_QUEUE_UNTIL(event_queue_entry* e_q_entry)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	int i;
-	int count = 1;
-	event_queue_entry* temp_e_q_entry = e_queue->head;
+	//sub->location=NULL;
+	sub->next_node=NULL;
+	sub->next_subs=NULL;
+	sub->update=NULL;
 	
-	if(e_q_entry == NULL || temp_e_q_entry == NULL){
-		printf("ERROR[%s] Invalid event pointer\n",__FUNCTION__);
-		return;
-	}
-
-	/* Count how many event should be flushed */
-	if(e_q_entry == e_queue->tail){
-		count = e_queue->entry_nb;
-	}
-	else{
-		while(temp_e_q_entry != e_q_entry){
-			count++;
-			temp_e_q_entry = temp_e_q_entry->next;
-		}
-	}
-
-	/* Dequeue event */
-	for(i=0; i<count; i++){
-		DEQUEUE_IO();
-	}
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-}
-
-int CHECK_OVERWRITE(event_queue_entry* e_q_entry, int64_t sector_nb, unsigned int length)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	int ret = 0;
-	int64_t temp_sector_nb = e_q_entry->sector_nb;
-	unsigned int temp_length = e_q_entry->length;
-
-	if(e_q_entry->io_type == WRITE){
-		if( sector_nb <= temp_sector_nb && \
-			(sector_nb + length) >= (temp_sector_nb + temp_length)){
-				
-			ret = 1;
-		}
-	}
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-	if(ret == 0)
-		return FAIL;
-	else
-		return SUCCESS;
-}
-
-int CHECK_SEQUENTIALITY(event_queue_entry* e_q_entry, int64_t sector_nb)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	if(e_q_entry == NULL){
-		return FAIL;
-	}
-
-	int ret = 0;
-	int64_t temp_sector_nb = e_q_entry->sector_nb;
-	unsigned int temp_length = e_q_entry->length;
-
-	if((e_q_entry->io_type == WRITE) && \
-			(e_q_entry->valid == VALID) && \
-			(temp_sector_nb + temp_length == sector_nb)){
-		ret = 1;	
-	}
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-	if(ret == 0)
-		return FAIL;
-	else
-		return SUCCESS;
-}
-
-event_queue_entry* CHECK_IO_DEPENDENCY_FOR_READ(int64_t sector_nb, unsigned int length)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	int64_t last_sector_nb = sector_nb + length - 1;
-	int64_t temp_sector_nb;
-	int64_t temp_last_sector_nb;
-
-	event_queue_entry* ret_e_q_entry = NULL;
-	event_queue_entry* e_q_entry = NULL;
-
-	if(last_read_entry == NULL){
-		e_q_entry = e_queue->head;
-	}
-	else{
-		e_q_entry = last_read_entry->next;
-	}
-
-	while(e_q_entry != NULL){
-		if(e_q_entry->valid == VALID){
-			temp_sector_nb = e_q_entry->sector_nb;
-			temp_last_sector_nb = temp_sector_nb + e_q_entry->length - 1; 
-
-			/* Find the last IO event which has dependency */		
-			if(temp_sector_nb <= last_sector_nb && \
-				sector_nb <= temp_last_sector_nb){
-				
-				ret_e_q_entry = e_q_entry;
-			}
-		}
-		e_q_entry = e_q_entry->next;
-	}
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-	return ret_e_q_entry;
-}
-
-int CHECK_IO_DEPENDENCY_FOR_WRITE(event_queue_entry* e_q_entry, int64_t sector_nb, unsigned int length)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start.\n",__FUNCTION__);
-#endif
-	if(e_q_entry == NULL){
-		return FAIL;
-	}
-
-	int ret = 0;
-	int64_t last_sector_nb = sector_nb + length - 1;
-	int64_t temp_sector_nb = e_q_entry->sector_nb;
-	int64_t temp_last_sector_nb = temp_sector_nb + e_q_entry->length - 1;
-
-	if(e_q_entry->io_type == WRITE && e_q_entry->valid == VALID){
-
-		/* Find the last IO event which has dependency */		
-		if(temp_sector_nb < sector_nb && \
-			sector_nb < temp_last_sector_nb && \
-			temp_last_sector_nb < last_sector_nb ){
-			
-			ret = 1;
-		}
-	}
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End.\n",__FUNCTION__);
-#endif
-	if(ret == 1)
-		return SUCCESS;
-	else
-		return FAIL;
-}
-
-int EVENT_QUEUE_IS_FULL(int io_type, unsigned int length)
-{
-	int ret = FAIL;
-	if(io_type == WRITE){	
-		if(empty_write_buffer_frame < length)
-			ret = SUCCESS;
-	}
-	else if(io_type == READ){
-		if(empty_read_buffer_frame < length)
-			ret = SUCCESS;
-	}
-
-	return ret;
-}
-
-void SECURE_WRITE_BUFFER(void)
-{
-	FLUSH_EVENT_QUEUE_UNTIL(e_queue->tail);
-}
-
-void SECURE_READ_BUFFER(void)
-{
-	if(c_e_queue->entry_nb != 0){
-		DEQUEUE_COMPLETED_READ();
-	}
-
-	if(last_read_entry != NULL){
-		FLUSH_EVENT_QUEUE_UNTIL(last_read_entry);
-		DEQUEUE_COMPLETED_READ();
-	}
-}
-
-char GET_WB_VALID_ARRAY_ENTRY(void* buffer_pointer)
-{
-	/* Calculate index of write buffer valid array */
-	int index = (int)(buffer_pointer - write_buffer)/SECTOR_SIZE;
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] index: %d\n",__FUNCTION__, index);
-#endif
-	
-	/* Update write buffer valid array */
-	return wb_valid_array[index];
-}
-
-void UPDATE_WB_VALID_ARRAY(event_queue_entry* e_q_entry, char new_value)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] Start. \n",__FUNCTION__);
-#endif
-	void* p_buf = e_q_entry->buf;
-	if(p_buf == NULL){
-		printf("ERROR[%s] Null pointer!\n",__FUNCTION__);
-		return;
-	}
-
-	int index = (int)(p_buf - write_buffer)/SECTOR_SIZE;
-	int count = 0;
-	int length = e_q_entry->length;
-
-	while(count != length){
-		if(GET_WB_VALID_ARRAY_ENTRY(p_buf)=='V'){
-			wb_valid_array[index] = new_value;	
-			count++;
-		}
-
-		/* Increase index and buffer pointer */
-		p_buf = p_buf + SECTOR_SIZE;
-		index++;
-		if(index == WRITE_BUFFER_FRAME_NB){
-			p_buf = write_buffer;
-			index = 0;
-		} 
-	}
-
-#ifdef FIRM_IO_BUF_DEBUG
-	printf("[%s] End. \n",__FUNCTION__);
-#endif
-}
-
-void UPDATE_WB_VALID_ARRAY_ENTRY(void* buffer_pointer, char new_value)
-{
-	/* Calculate index of write buffer valid array */
-	int index = (int)(buffer_pointer - write_buffer)/SECTOR_SIZE;
-	if(index >= WRITE_BUFFER_FRAME_NB){
-		printf("ERROR[%s] Invlald index. \n",__FUNCTION__);
-		return;
+	if(req!=NULL)
+	{
+		sub->next_subs = req->subs;
+		req->subs = sub;
 	}
 	
-	/* Update write buffer valid array */
-	wb_valid_array[index] = new_value;
-}
-
-void UPDATE_WB_VALID_ARRAY_PARTIAL(event_queue_entry* e_q_entry, char new_value, int length, int mode)
-{
-	// mode 0: change valid value of the front array
-	// mode 1: change valid value of the rear array
-
-	int count = 0;
-	int offset = 0;
-	void* p_buf = e_q_entry->buf;
-
-	if(mode == 1){
-		offset = e_q_entry->length - length;
-
-		while(count != offset){
-			if(GET_WB_VALID_ARRAY_ENTRY(p_buf)!='I'){
-				count++;
-			}
-			p_buf = p_buf + SECTOR_SIZE;
-			if(p_buf == write_buffer_end){
-				p_buf = write_buffer;
-			}
-		}
-	}
-
-	count = 0;
-	while(count != length){
-		if(GET_WB_VALID_ARRAY_ENTRY(p_buf)!='I'){
-			UPDATE_WB_VALID_ARRAY_ENTRY(p_buf, new_value);
-			count++;
-		}
-
-		/* Increase index and buffer pointer */
-		p_buf = p_buf + SECTOR_SIZE;
-		if(p_buf == write_buffer_end){
-			p_buf = write_buffer;
-		}
-	}
-}
-
-void INCREASE_WB_SATA_POINTER(int entry_nb)
-{
-	int i;
-#ifdef FIRM_IO_BUF_DEBUG
-	int index = (int)(sata_write_ptr - write_buffer)/SECTOR_SIZE;
-	printf("[%s] Start: %d -> ",__FUNCTION__, index);
+	
+	if (operation == READ)
+	{
+#ifdef FTL_MAP_CACHE
+		ppn = CACHE_GET_PPN(lpn);
+#else
+		ppn = GET_MAPPING_INFO(ssd, lpn);
 #endif
-	for(i=0; i<entry_nb; i++){
-		/* Decrease the # of empty write buffer frame */
-		empty_write_buffer_frame--;
-
-		/* Update write buffer valid array */
-		UPDATE_WB_VALID_ARRAY_ENTRY(sata_write_ptr, 'V');
-
-		/* Increase sata write pointer */
-		sata_write_ptr = sata_write_ptr + SECTOR_SIZE;
+        num_flash = CALC_FLASH(ssd, ppn);
+        num_channel = num_flash %  CHANNEL_NB;
+        
+        sub->num_channel = num_channel;
+		//loc = find_location(ssd,ssd->dram->map->map_entry[lpn].pn);
+		//sub->location=loc;
+		//sub->begin_time = ssd->current_time;
+		//sub->current_state = SR_WAIT;
+		//sub->current_time=MAX_INT64;
+		//sub->next_state = SR_R_C_A_TRANSFER;
+		//sub->next_state_predict_time=MAX_INT64;
+		sub->lpn = lpn;
+		sub->size=size;            
 		
-		if(sata_write_ptr == write_buffer_end){
-			sata_write_ptr = write_buffer;
+		
+		p_ch = &channel_head[num_channel];	
+		sub->ppn = map_entry[lpn].pn;
+		sub->operation = READ;
+		sub->state=(ssd->dram->map->map_entry[lpn].state&0x7fffffff);
+		sub_r=p_ch->subs_r_head;                                                      
+		flag=0;
+		while (sub_r!=NULL)
+		{
+			if (sub_r->ppn==sub->ppn)
+			{
+				flag=1;
+				break;
+			}
+			sub_r=sub_r->next_node;
 		}
+		
+			
+			
+		if (flag==0)
+		{
+			if (p_ch->subs_r_tail!=NULL)
+			{
+					
+				p_ch->subs_r_tail->next_node=sub;
+				p_ch->subs_r_tail=sub;
+				
+			} 
+			else
+			{
+				
+				p_ch->subs_r_head=sub;
+				p_ch->subs_r_tail=sub;
+				
+			}
+		}
+		else
+		{
+		
+			/*sub->current_state = SR_R_DATA_TRANSFER;
+			sub->current_time=ssd->current_time;
+			sub->next_state = SR_COMPLETE;
+			sub->next_state_predict_time=ssd->current_time+1000;
+			sub->complete_time=ssd->current_time+1000;*/
+			// Narges 
+			/*ssd->channel_head[loc->channel].read_count++; 
+              ssd->channel_head[loc->channel].chip_head[loc->chip].read_count++;*/
+		}
+		
 	}
-#ifdef FIRM_IO_BUF_DEBUG
-	index = (int)(sata_write_ptr - write_buffer)/SECTOR_SIZE;
-	printf("%d End.\n",index);
-#endif
-}
-
-void INCREASE_RB_SATA_POINTER(int entry_nb)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	int index = (int)(sata_read_ptr - read_buffer)/SECTOR_SIZE;
-	printf("[%s] Start: %d -> ",__FUNCTION__, index);
-#endif
-	int i;
-
-	for(i=0; i<entry_nb; i++){
-		empty_read_buffer_frame++;
-
-		sata_read_ptr = sata_read_ptr + SECTOR_SIZE;
-
-		if(sata_read_ptr == read_buffer_end){
-			sata_read_ptr = read_buffer;
-		}
-	}
-#ifdef FIRM_IO_BUF_DEBUG
-	index = (int)(sata_read_ptr - read_buffer)/SECTOR_SIZE;
-	printf("%d End.\n",index);
-#endif
-}
-
-void INCREASE_WB_FTL_POINTER(int entry_nb)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	int index = (int)(ftl_write_ptr - write_buffer)/SECTOR_SIZE;
-	printf("[%s] Start: %d -> ",__FUNCTION__, index);
-#endif
-	int count = 0;
-	char validity;
-
-	while(count != entry_nb){
-		/* Get write buffer frame status */
-		validity = GET_WB_VALID_ARRAY_ENTRY(ftl_write_ptr);
-
-		if(validity == 'V'){
-			/* Update write buffer valid array */
-			UPDATE_WB_VALID_ARRAY_ENTRY(ftl_write_ptr, 'F');
-
-			count++;
-		}
-
-		/* Increase ftl pointer by SECTOR_SIZE */
-		ftl_write_ptr = ftl_write_ptr + SECTOR_SIZE;
-		if(ftl_write_ptr == write_buffer_end){
-			ftl_write_ptr = write_buffer;
-		}
-	}
-#ifdef FIRM_IO_BUF_DEBUG
-	index = (int)(ftl_write_ptr - write_buffer)/SECTOR_SIZE;
-	printf("%d End.\n",index);
-#endif
-}
-
-void INCREASE_RB_FTL_POINTER(int entry_nb)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	int index = (int)(ftl_read_ptr - read_buffer)/SECTOR_SIZE;
-	printf("[%s] Start: %d -> ",__FUNCTION__, index);
-#endif
-	int i;
-
-	for(i=0;i<entry_nb;i++){
-
-		/* Increase ftl read pointer by SECTOR_SIZE */
-		ftl_read_ptr = ftl_read_ptr + SECTOR_SIZE;
-		if(ftl_read_ptr == read_buffer_end){
-			ftl_read_ptr = read_buffer;
-		}
-	}
-#ifdef FIRM_IO_BUF_DEBUG
-	index = (int)(ftl_read_ptr - read_buffer)/SECTOR_SIZE;
-	printf("%d End.\n",index);
-#endif
-}
-
-void INCREASE_WB_LIMIT_POINTER(void)
-{
-#ifdef FIRM_IO_BUF_DEBUG
-	int index = (int)(write_limit_ptr - write_buffer)/SECTOR_SIZE;
-	printf("[%s] Start: %d -> ",__FUNCTION__, index);
-#endif
-	/* Increase write limit pointer until ftl write pointer */
-	do{
-		/* Update write buffer valid array */
-		UPDATE_WB_VALID_ARRAY_ENTRY(write_limit_ptr, '0');
-
-		/* Incrase write limit pointer by SECTOR_SIZE */
-		write_limit_ptr = write_limit_ptr + SECTOR_SIZE;
-		if(write_limit_ptr == write_buffer_end){
-			write_limit_ptr = write_buffer;
-		}
-
-		empty_write_buffer_frame++;
 	
-	}while(write_limit_ptr != ftl_write_ptr);
+	else if(operation == WRITE)
+	{                                
+		sub->ppn=0;
+		sub->operation = WRITE;
+		//sub->location=(struct local *)malloc(sizeof(struct local));
+		//alloc_assert(sub->location,"sub->location");
+		//memset(sub->location,0, sizeof(struct local));
 
-#ifdef FIRM_IO_BUF_DEBUG
-	index = (int)(write_limit_ptr - write_buffer)/SECTOR_SIZE;
-	printf("%d. End.\n",index);
-#endif
+		//sub->current_state=SR_WAIT;
+		//sub->current_time=ssd->current_time;
+		sub->lpn=lpn;
+		sub->size=size;
+		sub->state=state;
+		//sub->begin_time=ssd->current_time;
+		
+      
+		if (allocate_location(ssd ,sub)==ERROR)
+		{
+			free(sub->location);
+			sub->location=NULL;
+			free(sub);
+			sub=NULL;
+			return NULL;
+        }        			
+	}
+	else
+	{
+		/*free(sub->location);
+		sub->location=NULL;
+		free(sub);
+		sub=NULL;
+		printf("\nERROR ! Unexpected command.\n");
+		return NULL;*/
+	}
+	
+	return sub;
 }
 
-void INCREASE_RB_LIMIT_POINTER(void)
+void allocate_location(struct ssdstate * ssd ,struct sub_request *sub_req)
 {
-#ifdef FIRM_IO_BUF_DEBUG
-	int index = (int)(read_limit_ptr - read_buffer)/SECTOR_SIZE;
-	printf("[%s] Start: %d -> ",__FUNCTION__, index);
-#endif
-	/* Increase read limit pointer until ftl read pointer */
-	do{
 
-		/* Increase read lmit pointer by SECTOR_SIZE */
-		read_limit_ptr = read_limit_ptr + SECTOR_SIZE;
-		if(read_limit_ptr == read_buffer_end){
-			read_limit_ptr = read_buffer;
-		}
-	}while(read_limit_ptr != ftl_read_ptr);
-#ifdef FIRM_IO_BUF_DEBUG
-	index = (int)(read_limit_ptr - read_buffer)/SECTOR_SIZE;
-	printf("%d End.\n",index);
+	struct sub_request * update=NULL;
+    int64_t ppn;
+    unsigned int lpn = sub_req->lpn;
+    int num_flash = 0, num_channel = 0;
+    int map_entry_new,map_entry_old,modify;
+	//unsigned int channel_num=0,chip_num=0,die_num=0,plane_num=0;
+	//struct local *location=NULL;
+
+#ifdef FTL_MAP_CACHE
+    ppn = CACHE_GET_PPN(sub_req->lpn);
+#else
+    ppn = GET_MAPPING_INFO(ssd, sub_req->lpn);
 #endif
+    num_flash = CALC_FLASH(ssd, ppn);
+    num_channel = num_flash %  CHANNEL_NB;
+
+    sub_req->num_channel = num_channel;        
+
+    if (map_entry[sub_req->lpn].state!=0)
+    {            
+
+        if ((sub_req->state&map_entry[sub_req->lpn].state)!=map_entry[sub_req->lpn].state)  
+        {
+			
+            //ssd->read_count++;
+            //ssd->update_read_count++;
+            update=(struct sub_request *)malloc(sizeof(struct sub_request));
+            //alloc_assert(update,"update");
+            //memset(update,0, sizeof(struct sub_request));
+
+            //update->location=NULL;
+            update->num_channel = num_channel;
+            update->next_node=NULL;
+            update->next_subs=NULL;
+            update->update=NULL;						
+            //location = find_location(ssd,map_entry[sub_req->lpn].pn);
+            //update->location=location;
+            //update->begin_time = ssd->current_time;
+            //update->current_state = SR_WAIT;
+            //update->current_time=MAX_INT64;
+            //update->next_state = SR_R_C_A_TRANSFER;
+            //update->next_state_predict_time=MAX_INT64;
+            update->lpn = sub_req->lpn;
+            update->state=((map_entry[sub_req->lpn].state^sub_req->state)&0x7fffffff);
+            update->size=size(update->state);
+            update->ppn = map_entry[sub_req->lpn].pn;
+            update->operation = READ;
+				
+				
+            if (channel_head[num_channel].subs_r_tail!=NULL)
+            {
+                channel_head[num_channel].subs_r_tail->next_node=update;
+                channel_head[num_channel].subs_r_tail=update;
+            } 
+            else
+            {
+                channel_head[num_channel].subs_r_tail=update;
+                channel_head[num_channel].subs_r_head=update;
+            }
+        }
+
+        if (update!=NULL)
+        {
+			
+            sub_req->update=update;
+
+            sub_req->state=(sub_req->state|update->state);
+            sub_req->size=size(sub_req->state);
+        }
+
+    }
+
+    if (channel_head[sub_req->num_channel].subs_w_tail!=NULL)
+    {
+        channel_head[sub_req->num_channel].subs_w_tail->next_node=sub_req;
+        channel_head[sub_req->num_channel].subs_w_tail=sub_req;
+    } 
+    else
+    {
+        channel_head[sub_req->num_channel].subs_w_tail=sub_req;
+        channel_head[sub_req->num_channel].subs_w_head=sub_req;
+    }
+
+    if(map_entry[lpn].state==0)               
+    {   map_entry[lpn].pn=ppn;	
+        map_entry[lpn].state=sub_req->state;   //0001
+    }//if(map_entry[lpn].state==0)
+    else if(map_entry[lpn].state>0)          
+    {
+        map_entry_new=sub_req->state;      
+        map_entry_old=map_entry[lpn].state;
+        modify=map_entry_new|map_entry_old;
+        map_entry[lpn].state=modify; 
+    }//else if(map_entry[lpn].state>0)
 }
 
-int COUNT_READ_EVENT(void)
+void DISTRIBUTE(struct ssdstate *ssd) 
 {
-	int count = 1;
-	event_queue_entry* e_q_entry = NULL;
+	unsigned int start, end, first_lsn,last_lsn,lpn,flag=0,flag_attached=0,full_page;
+	unsigned int j, k, sub_size;
+	int i=0;
+	struct request *req;
+	struct sub_request *sub;
+	int* complt;
 
-	if(last_read_entry == NULL){
-		return 0;
+	full_page=~(0xffffffff<<ssd->ssdparams->SECTORS_PER_PAGE);
+
+	req = request_tail;
+	if(req->response_time != 0){
+		return;
 	}
-	else{
-		e_q_entry = e_queue->head;
-		while(e_q_entry != last_read_entry){
-			count++;
+	if (req->operation==WRITE)
+	{
+		return;
+	}
 
-			e_q_entry = e_q_entry->next;
+	
+	if(req != NULL)
+	{
+		if(req->distri_flag == 0)
+		{
+	
+			if(req->complete_lsn_count != request_tail->size)
+			{		
+				first_lsn = req->lsn;				
+				last_lsn = first_lsn + req->size;
+				complt = req->need_distr_flag; // which subpages need to be transfered 
+				start = first_lsn - first_lsn % ssd->ssdparams->SECTORS_PER_PAGE;
+				end = (last_lsn/ssd->ssdparams->SECTORS_PER_PAGE + 1) * ssd->ssdparams->SECTORS_PER_PAGE;
+				i = (end - start)/32;	
+	
+				while(i >= 0)
+				{	
+					for(j=0; j<32/ssd->ssdparams->SECTORS_PER_PAGE; j++)
+					{	
+					
+						
+						k = (complt[((end-start)/32-i)] >>(ssd->ssdparams->SECTORS_PER_PAGE*j)) & full_page;	  // k: which subpages need to be transfered 
+						
+						if (k !=0) 
+						{
+							lpn = start/ssd->ssdparams->SECTORS_PER_PAGE+ ((end-start)/32-i)*32/ssd->ssdparams->SECTORS_PER_PAGE + j;
+							sub_size=transfer_size(ssd,k,lpn,req);    
+							if (sub_size==0) 
+							{
+								continue;
+							}
+							else
+							{
+								sub=creat_sub_request(ssd,lpn,sub_size,0,req,req->operation);
+							}	
+						}
+					}
+					i = i-1;
+				}
+
+			}
+			else
+			{
+				//req->begin_time=ssd->current_time;
+				req->response_time=1000;   
+			}
+
 		}
 	}
-	return count;
+	return;
+}
+
+void PROCESS(struct ssdstate *ssd) {
+	unsigned int i,chan,random_num;          
+    struct request *req=NULL, *p=NULL;
+    
+    random_num=ssdstate->last_time%ssd->ssdparams->CHANNEL_NB;
+
+    for(chan=0;chan<ssd->ssdparams->CHANNEL_NB;chan++)	     
+	{
+		i=(random_num+chan)%ssd->ssdparams->CHANNEL_NB;
+  	
+        if(channel_head[i].subs_r_head!=NULL)	
+        {		     
+            PROCESS_READS(ssd, i);                   
+						
+        }
+        if(channel_head[i].subs_w_head!=NULL)
+        {	
+            PROCESS_WRITES(ssd, i);				
+        }
+    }
+
+    req = request_queue;
+    while (req != NULL) {
+        p = req;
+        req = req->next_node;
+        free(need_distr_flag);
+        free(p);
+    }    
+	return;
+}
+
+void PROCESS_READS(struct ssdstate *ssd, unsigned int channel) {
+    struct sub_request * sub=NULL, * p=NULL;
+    sub=ssd->channel_head[i].subs_r_head;
+
+    while(sub!=NULL) {
+        FTL_READ(ssd, sub->lpn * ssd->ssdparams->SECTORS_PER_PAGE, ssd->ssdparams->SECTORS_PER_PAGE);
+        p = sub;
+        sub = sub->next_node;
+        free(p);
+    }
+}
+
+void PROCESS_WRITES(struct ssdstate *ssd, unsigned int channel) {
+    struct sub_request * sub=NULL, * p=NULL;
+    sub=ssd->channel_head[i].subs_w_head;
+
+    while(sub!=NULL) {
+        FTL_WRITE(ssd, sub->lpn * ssd->ssdparams->SECTORS_PER_PAGE, ssd->ssdparams->SECTORS_PER_PAGE);
+        p = sub;
+        sub = sub->next_node;
+        free(p);
+    }
+}
+
+unsigned int transfer_size(struct ssdstate *ssd,int need_distribute,unsigned int lpn,struct request *req)
+{
+	unsigned int first_lpn,last_lpn,state,trans_size;
+	unsigned int mask=0,offset1=0,offset2=0;
+
+	first_lpn=req->lsn/ssd->ssdparams->SECTORS_PER_PAGE;
+	last_lpn=(req->lsn+req->size-1)/ssd->ssdparams->SECTORS_PER_PAGE;
+
+	mask=~(0xffffffff<<(ssd->ssdparams->SECTORS_PER_PAGE));
+	state=mask;
+	if(lpn==first_lpn)
+	{
+		offset1=ssd->ssdparams->SECTORS_PER_PAGE-((lpn+1)*ssd->ssdparams->SECTORS_PER_PAGE-req->lsn);
+		state=state&(0xffffffff<<offset1);
+	}
+	if(lpn==last_lpn)
+	{
+		offset2=ssd->ssdparams->SECTORS_PER_PAGE-((lpn+1)*ssd->ssdparams->SECTORS_PER_PAGE-(req->lsn+req->size));
+		state=state&(~(0xffffffff<<offset2));
+	}
+
+	trans_size=size(state&need_distribute);
+
+	return trans_size;
+}
+
+unsigned int size(unsigned int stored)
+{
+	unsigned int i,total=0,mask=0x80000000;
+
+	for(i=1;i<=32;i++)
+	{
+		if(stored & mask) total++;
+		stored<<=1;
+	}
+    return total;
+}
+
+int keyCompareFunc(TREE_NODE *p , TREE_NODE *p1)
+{
+	struct buffer_group *T1=NULL,*T2=NULL;
+
+	T1=(struct buffer_group*)p;
+	T2=(struct buffer_group*)p1;
+
+
+	if(T1->group< T2->group) return 1;
+	if(T1->group> T2->group) return -1;
+
+	return 0;
+}
+
+int freeFunc(TREE_NODE *pNode)
+{
+	
+	if(pNode!=NULL)
+	{
+		free((void *)pNode);
+	}
+	
+	
+	pNode=NULL;
+	return 1;
 }
 
 #endif

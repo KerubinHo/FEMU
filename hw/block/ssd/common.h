@@ -70,7 +70,7 @@
 /* VSSIM Benchmark*/
 #ifndef VSSIM_BENCH
   //#define DEL_QEMU_OVERHEAD
-  //#define FIRM_IO_BUFFER	/* SSD Read/Write Buffer ON */
+  #define FIRM_IO_BUFFER	/* SSD Read/Write Buffer ON */
   //#define SSD_THREAD		/* Enable SSD thread & SSD Read/Write Buffer */
   //#define SSD_THREAD_MODE_1
 //#define SSD_THREAD_MODE_2	/* Pending WB Flush until WB is full */
@@ -95,6 +95,7 @@
 
 /* HEADER - FIRMWARE */
 #include "firm_buffer_manager.h"
+#include "avlTree.h"
 
 /* HEADER - FTL Dependency */
 #if defined PAGE_MAP || defined BLOCK_MAP
