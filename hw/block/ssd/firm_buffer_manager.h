@@ -27,21 +27,9 @@ struct sub_request{
     unsigned int lpn;
     int operation;
 	unsigned int state;
-    unsigned int ppn;                  //分配那个物理子页给这个子请求。在multi_chip_page_mapping中，产生子页请求时可能就知道psn的值，其他时候psn的值由page_map_read,page_map_write等FTL最底层函数产生。
 	struct sub_request *next_subs;    //指向属于同一个request的子请求
 	struct sub_request *update;
 	struct sub_request *next_node;
-    int num_channel
-};
-
-struct channel_info{
-	int chip;                            //表示在该总线上有多少颗粒
-	unsigned int token;                  //在动态分配中，为防止每次分配在第一个chip需要维持一个令牌，每次从令牌所指的位置开始分配
-
-	struct sub_request *subs_r_head;     //channel上的读请求队列头，先服务处于队列头的子请求
-	struct sub_request *subs_r_tail;     //channel上的读请求队列尾，新加进来的子请求加到队尾
-	struct sub_request *subs_w_head;     //channel上的写请求队列头，先服务处于队列头的子请求
-	struct sub_request *subs_w_tail;     //channel上的写请求队列，新加进来的子请求加到队尾   
 };
 
 struct entry{                       
@@ -66,7 +54,7 @@ void TERM_IO_BUFFER(void);
 void ADD_REQUEST(int io_type, unsigned int size, int64_t lsn);
 
 void BUFFER_MANAGEMENT(struct ssdstate *ssd);
-void INSERT_TO_BUFFER(struct ssdstate *ssd, unsigned int lpn, int state, struct sub_request *sub, struct request *req);
+void INSERT_TO_BUFFER(struct ssdstate *ssd, unsigned int lpn, int state, struct request *req);
 
 unsigned int size(unsigned int stored);
 int keyCompareFunc(TREE_NODE *p , TREE_NODE *p1);
@@ -75,7 +63,7 @@ void allocate_location(struct ssdstate * ssd ,struct sub_request *sub_req);
 void DISTRIBUTE(struct ssdstate *ssd);
 unsigned int transfer_size(struct ssdstate *ssd,int need_distribute,unsigned int lpn,struct request *req);
 void PROCESS(struct ssdstate *ssd);
-void PROCESS_READS(struct ssdstate *ssd, unsigned int channel);
-void PROCESS_WRITES(struct ssdstate *ssd, unsigned int channel);
+void PROCESS_READS(struct ssdstate *ssd);
+void PROCESS_WRITES(struct ssdstate *ssd);
 int freeFunc(TREE_NODE *pNode);
 #endif

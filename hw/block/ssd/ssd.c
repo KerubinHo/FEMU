@@ -111,6 +111,7 @@ void do_rand_warmup(struct ssdstate *ssd)
 
         ssd->in_warmup_stage = 1;
         while(fscanf(fp, "%"PRId64"%d\n", &io_oft, &io_sz) != EOF) {
+			printf("%d %d\n", io_oft, io_sz);
             SSD_WRITE(ssd, io_sz, io_oft);
             written_sz_in_sects += io_sz;
         }
