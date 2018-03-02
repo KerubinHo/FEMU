@@ -111,7 +111,6 @@ void do_rand_warmup(struct ssdstate *ssd)
 
         ssd->in_warmup_stage = 1;
         while(fscanf(fp, "%"PRId64"%d\n", &io_oft, &io_sz) != EOF) {
-			printf("%d %d\n", io_oft, io_sz);
             SSD_WRITE(ssd, io_sz, io_oft);
             written_sz_in_sects += io_sz;
         }
@@ -190,7 +189,7 @@ void SSD_INIT(struct ssdstate *ssd)
     fflush(ssd->statfp);
 
     /* Coperd: do warmup immediately after SSD structures are initialized */
-    do_rand_warmup(ssd);
+    //do_rand_warmup(ssd);
 }
 
 void SSD_TERM(struct ssdstate *ssd)
@@ -237,7 +236,10 @@ int64_t SSD_WRITE(struct ssdstate *ssd, unsigned int length, int64_t sector_nb)
 	ADD_REQUEST(WRITE, length, sector_nb);
     BUFFER_MANAGEMENT(ssd);
     DISTRIBUTE(ssd);
-    PROCESS(ssd);
+	int64_t ret;
+    ret = PROCESS(ssd);
+	//printf("WRITE: %d %d %llu\n", sector_nb, length, ret);
+	return ret;
 #else
 	return FTL_WRITE(ssd, sector_nb, length);
 #endif
@@ -280,7 +282,10 @@ int64_t SSD_READ(struct ssdstate *ssd, unsigned int length, int64_t sector_nb)
 	ADD_REQUEST(READ, length, sector_nb);
     BUFFER_MANAGEMENT(ssd);
     DISTRIBUTE(ssd);
-    PROCESS(ssd);
+	int64_t ret;
+    ret = PROCESS(ssd);
+	//printf("READ: %d %d %llu\n", sector_nb, length, ret);
+	return ret;
 #else
 	return FTL_READ(ssd, sector_nb, length);
 #endif

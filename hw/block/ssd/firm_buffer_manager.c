@@ -30,6 +30,7 @@ void INIT_IO_BUFFER(struct ssdstate *ssd)
 
     buffer = (tAVLTree *)avlTreeCreate((void*)keyCompareFunc , (void *)freeFunc);
     buffer->max_buffer_sector=ssd->ssdparams.WRITE_BUFFER_FRAME_NB;
+	buffer->buffer_sector_count=0;
     map_entry = (struct entry *)malloc(sizeof(struct entry) * page_num);
     memset(map_entry,0,sizeof(struct entry) * page_num);
 }
@@ -81,7 +82,7 @@ void BUFFER_MANAGEMENT(struct ssdstate *ssd) {
 	struct request *new_request;
 	struct buffer_group *buffer_node,key;
 	unsigned int mask=0,offset1=0,offset2=0;
-
+	//printf("FREE SECTOR COUNT: %d\n", buffer->max_buffer_sector - buffer->buffer_sector_count);
 	full_page=~(0xffffffff<<ssd->ssdparams.SECTORS_PER_PAGE);
 	
 	new_request=request_tail;
@@ -109,12 +110,13 @@ void BUFFER_MANAGEMENT(struct ssdstate *ssd) {
 			{             	
 				lsn_flag=full_page;
 				mask=1 << (lsn%ssd->ssdparams.SECTORS_PER_PAGE);
-				if(mask>31)
-				{
+				//printf("BUF MASK: %d %d\n", mask , buffer_node->stored);
+				//if(mask>31)
+				//{
 					//PRINTF("the subpage number is larger than 32!add some cases");
 					//getchar(); 		   
-				}
-				else if((buffer_node->stored & mask)==mask)
+				//}
+				if((buffer_node->stored & mask) == mask)
 				{
 					flag=1;
 					lsn_flag=lsn_flag&(~mask);
@@ -139,11 +141,13 @@ void BUFFER_MANAGEMENT(struct ssdstate *ssd) {
 						buffer_node->LRU_link_pre=NULL;			
 						buffer->buffer_head=buffer_node;													
 					}						
-					buffer->read_hit++;					
+					buffer->read_hit++;
+						  //printf("READ HIT\n");
 					new_request->complete_lsn_count++;											
 				}		
 				else if(flag==0)
 					{
+						//printf("READ MISS\n");
 						buffer->read_miss_hit++;
 					}
 
@@ -177,7 +181,7 @@ void BUFFER_MANAGEMENT(struct ssdstate *ssd) {
 				offset2=ssd->ssdparams.SECTORS_PER_PAGE-((lpn+1)*ssd->ssdparams.SECTORS_PER_PAGE-(new_request->lsn+new_request->size));
 				state=state&(~(0xffffffff<<offset2));
 			}
-			//printf("BUFFER MNG WRITE: %d %d\n",lsn, lpn);
+			//printf("BUFFER MNG WRITE: %d %d %d %d\n",lpn, first_lpn, last_lpn, state);
 			INSERT_TO_BUFFER(ssd, lpn, state,new_request);
 			lpn++;
 		}
@@ -421,7 +425,7 @@ struct sub_request * creat_sub_request(struct ssdstate * ssd,unsigned int lpn,in
 		else {		
 			subs_r_head=sub;
 			subs_r_tail=sub;
-		}		
+		}
 	}
 	
 	else if(operation == WRITE)
@@ -522,6 +526,7 @@ void DISTRIBUTE(struct ssdstate *ssd)
 
 	req = request_tail;
 	if(req->response_time != 0){
+		//printf("SKIP\n");
 		return;
 	}
 	if (req->operation==WRITE)
@@ -561,7 +566,7 @@ void DISTRIBUTE(struct ssdstate *ssd)
 								continue;
 							}
 							else
-							{
+								{
 								sub=creat_sub_request(ssd,lpn,sub_size,0,req,req->operation);
 							}	
 						}
@@ -575,15 +580,20 @@ void DISTRIBUTE(struct ssdstate *ssd)
 	return;
 }
 
-void PROCESS(struct ssdstate *ssd) {
+int64_t PROCESS(struct ssdstate *ssd) {
 	unsigned int i,chan,random_num;          
     struct request *req=NULL, *p=NULL;
     //printf("PROCESS\n");
-
-	PROCESS_READS(ssd);	
-	PROCESS_WRITES(ssd);				
+	int64_t cur = 0;
+	int max = 0;
+	
+	max = cur = PROCESS_READS(ssd);	
+	cur = PROCESS_WRITES(ssd);
+	if (cur > max)
+		max = cur;
 
     req = request_queue;
+	max += req->response_time;
     while (req != NULL) {
         p = req;
         req = req->next_node;
@@ -592,37 +602,48 @@ void PROCESS(struct ssdstate *ssd) {
     }
 	request_queue = NULL;
     request_tail = NULL;
-	return;
+	//printf("%llu\n", max);
+	return max;
 }
 
-void PROCESS_READS(struct ssdstate *ssd) {
+int64_t PROCESS_READS(struct ssdstate *ssd) {
     struct sub_request * sub=NULL, * p=NULL;
     sub=subs_r_head;
+	int64_t max = 0;
+	int64_t cur = 0;
 
     while(sub!=NULL) {
-        FTL_READ(ssd, sub->lpn * ssd->ssdparams.SECTORS_PER_PAGE, ssd->ssdparams.SECTORS_PER_PAGE);
-		//printf("READ");
+        cur = FTL_READ(ssd, sub->lpn * ssd->ssdparams.SECTORS_PER_PAGE, ssd->ssdparams.SECTORS_PER_PAGE);
+		if (cur > max)
+			max = cur;
+		//printf("READ\n");
         p = sub;
         sub = sub->next_node;
         free(p);
     }
 	subs_r_head = NULL;
 	subs_r_tail = NULL;
+	return max;
 }
 
-void PROCESS_WRITES(struct ssdstate *ssd) {
+int64_t PROCESS_WRITES(struct ssdstate *ssd) {
     struct sub_request * sub=NULL, * p=NULL;
     sub=subs_w_head;
+	int64_t max = 0;
+	int64_t cur = 0;
 
     while(sub!=NULL) {
-        FTL_WRITE(ssd, sub->lpn * ssd->ssdparams.SECTORS_PER_PAGE, ssd->ssdparams.SECTORS_PER_PAGE);
-		//printf("WRITE");
+        cur = FTL_WRITE(ssd, sub->lpn * ssd->ssdparams.SECTORS_PER_PAGE, ssd->ssdparams.SECTORS_PER_PAGE);
+		if (cur > max)
+			max = cur;
+		//printf("WRITE\n");
         p = sub;
         sub = sub->next_node;
         free(p);
     }
 	subs_w_head = NULL;
 	subs_w_tail = NULL;
+	return max;
 }
 
 unsigned int transfer_size(struct ssdstate *ssd,int need_distribute,unsigned int lpn,struct request *req)

@@ -303,7 +303,7 @@ int64_t _FTL_READ(struct ssdstate *ssd, int64_t sector_nb, unsigned int length)
 #ifdef FIRM_IO_BUFFER
 			//INCREASE_RB_LIMIT_POINTER();
 #endif
-            printf("ppn[%lld] not mapped!!!\n", ppn);
+            //printf("ppn[%lld] not mapped!!!\n", ppn);
 			//return FAIL;
 		}
 

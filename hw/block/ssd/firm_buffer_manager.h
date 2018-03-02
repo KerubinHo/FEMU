@@ -62,8 +62,8 @@ struct sub_request * creat_sub_request(struct ssdstate * ssd,unsigned int lpn,in
 void allocate_location(struct ssdstate * ssd ,struct sub_request *sub_req);
 void DISTRIBUTE(struct ssdstate *ssd);
 unsigned int transfer_size(struct ssdstate *ssd,int need_distribute,unsigned int lpn,struct request *req);
-void PROCESS(struct ssdstate *ssd);
-void PROCESS_READS(struct ssdstate *ssd);
-void PROCESS_WRITES(struct ssdstate *ssd);
+int64_t PROCESS(struct ssdstate *ssd);
+int64_t PROCESS_READS(struct ssdstate *ssd);
+int64_t PROCESS_WRITES(struct ssdstate *ssd);
 int freeFunc(TREE_NODE *pNode);
 #endif
