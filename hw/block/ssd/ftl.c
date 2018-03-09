@@ -26,6 +26,7 @@
 #include "block/block_int.h"
 #include "god.h"
 #include "common.h"
+#include "firm_buffer_manager.h"
 #include "ssd_io_manager.h"
 #include "ftl_gc_manager.h"
 #include "ssd.h"
@@ -104,7 +105,7 @@ void FTL_INIT(struct ssdstate *ssd)
 		INIT_CACHE();
 #endif
 #ifdef FIRM_IO_BUFFER
-		INIT_IO_BUFFER();
+		INIT_IO_BUFFER(ssd);
 #endif
 #ifdef MONITOR_ON
 		INIT_LOG_MANAGER();
@@ -129,7 +130,7 @@ void FTL_TERM(struct ssdstate *ssd)
 
 #if 0
 #ifdef FIRM_IO_BUFFER
-	TERM_IO_BUFFER();
+	TERM_IO_BUFFER(ssd);
 #endif
 
 	TERM_MAPPING_TABLE(ssd);
@@ -282,7 +283,7 @@ int64_t _FTL_READ(struct ssdstate *ssd, int64_t sector_nb, unsigned int length)
     int slot;
 
 #ifdef FIRM_IO_BUFFER
-	INCREASE_RB_FTL_POINTER(length);
+	INCREASE_RB_FTL_POINTER(ssd, length);
 #endif
 
 	while(remain > 0){
@@ -300,7 +301,7 @@ int64_t _FTL_READ(struct ssdstate *ssd, int64_t sector_nb, unsigned int length)
 
 		if(ppn == -1){
 #ifdef FIRM_IO_BUFFER
-			INCREASE_RB_LIMIT_POINTER();
+			INCREASE_RB_LIMIT_POINTER(ssd);
 #endif
             printf("ppn[%lld] not mapped!!!\n", ppn);
 			//return FAIL;
@@ -420,7 +421,7 @@ int64_t _FTL_READ(struct ssdstate *ssd, int64_t sector_nb, unsigned int length)
 	INCREASE_IO_REQUEST_SEQ_NB(ssd);
 
 #ifdef FIRM_IO_BUFFER
-	INCREASE_RB_LIMIT_POINTER();
+	INCREASE_RB_LIMIT_POINTER(ssd);
 #endif
 
 #ifdef MONITOR_ON
@@ -536,7 +537,7 @@ int64_t _FTL_WRITE(struct ssdstate *ssd, int64_t sector_nb, unsigned int length)
 		write_sects = SECTORS_PER_PAGE - left_skip - right_skip;
 
 #ifdef FIRM_IO_BUFFER
-		INCREASE_WB_FTL_POINTER(write_sects);
+		INCREASE_WB_FTL_POINTER(ssd, write_sects);
 #endif
 
 #ifdef WRITE_NOPARAL
@@ -618,7 +619,7 @@ int64_t _FTL_WRITE(struct ssdstate *ssd, int64_t sector_nb, unsigned int length)
 #endif
 
 #ifdef FIRM_IO_BUFFER
-	INCREASE_WB_LIMIT_POINTER();
+	INCREASE_WB_LIMIT_POINTER(ssd);
 #endif
 
 #ifdef MONITOR_ON

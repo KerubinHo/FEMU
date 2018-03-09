@@ -1,3 +1,4 @@
+
 // File: firm_buffer_manager.h
 // Date: 2014. 12. 03.
 // Author: Jinsoo Yoo (jedisty@hanyang.ac.kr)
@@ -33,28 +34,28 @@ typedef struct event_queue
 	event_queue_entry* tail;
 }event_queue;
 
-void INIT_IO_BUFFER(void);
-void TERM_IO_BUFFER(void);
-void INIT_WB_VALID_ARRAY(void);
+void INIT_IO_BUFFER(struct ssdstate *ssd);
+void TERM_IO_BUFFER(struct ssdstate *ssd);
+void INIT_WB_VALID_ARRAY(struct ssdstate *ssd);
 
-void *SSD_THREAD_MAIN_LOOP(void *arg);
-void ENQUEUE_IO(int io_type, int64_t sector_nb, unsigned int length);
-void ENQUEUE_READ(int64_t sector_nb, unsigned int length);
-void ENQUEUE_WRITE(int64_t sector_nb, unsigned int length);
+void *SSD_THREAD_MAIN_LOOP(struct ssdstate *ssd, void *arg);
+int64_t ENQUEUE_IO(struct ssdstate *ssd, int io_type, int64_t sector_nb, unsigned int length);
+int64_t ENQUEUE_READ(struct ssdstate *ssd, int64_t sector_nb, unsigned int length);
+void ENQUEUE_WRITE(struct ssdstate *ssd, int64_t sector_nb, unsigned int length);
 
-void DEQUEUE_IO(void);
-void DEQUEUE_COMPLETED_READ(void);
+int64_t DEQUEUE_IO(struct ssdstate *ssd);
+void DEQUEUE_COMPLETED_READ(struct ssdstate *ssd);
 
 event_queue_entry* ALLOC_NEW_EVENT(int io_type, int64_t sector_nb, unsigned int length, void* buf);
 
-void WRITE_DATA_TO_BUFFER(unsigned int length);
-void READ_DATA_FROM_BUFFER_TO_HOST(event_queue_entry* c_e_q_entry);
-void COPY_DATA_TO_READ_BUFFER(event_queue_entry* dst_entry, event_queue_entry* src_entry);
-void FLUSH_EVENT_QUEUE_UNTIL(event_queue_entry* e_q_entry);
+void WRITE_DATA_TO_BUFFER(struct ssdstate *ssd, unsigned int length);
+void READ_DATA_FROM_BUFFER_TO_HOST(struct ssdstate *ssd, event_queue_entry* c_e_q_entry);
+void COPY_DATA_TO_READ_BUFFER(struct ssdstate *ssd, event_queue_entry* dst_entry, event_queue_entry* src_entry);
+int64_t FLUSH_EVENT_QUEUE_UNTIL(struct ssdstate *ssd, event_queue_entry* e_q_entry);
 
 int EVENT_QUEUE_IS_FULL(int io_type, unsigned int length);
-void SECURE_WRITE_BUFFER(void);
-void SECURE_READ_BUFFER(void);
+int64_t SECURE_WRITE_BUFFER(struct ssdstate *ssd);
+int64_t SECURE_READ_BUFFER(struct ssdstate *ssd);
 
 /* Check Event */
 int CHECK_OVERWRITE(event_queue_entry* e_q_entry, int64_t sector_nb, unsigned int length);
@@ -63,18 +64,18 @@ event_queue_entry* CHECK_IO_DEPENDENCY_FOR_READ(int64_t sector_nb, unsigned int 
 int CHECK_IO_DEPENDENCY_FOR_WRITE(event_queue_entry* e_q_entry, int64_t sector_nb, unsigned int length);
 
 /* Manipulate Write Buffer Valid Array */
-char GET_WB_VALID_ARRAY_ENTRY(void* buffer_pointer);
-void UPDATE_WB_VALID_ARRAY(event_queue_entry* e_q_entry, char new_value);
-void UPDATE_WB_VALID_ARRAY_ENTRY(void* buffer_pointer, char new_value);
-void UPDATE_WB_VALID_ARRAY_PARTIAL(event_queue_entry* e_q_entry, char new_value, int length, int mode);
+char GET_WB_VALID_ARRAY_ENTRY(struct ssdstate *ssd, void* buffer_pointer);
+void UPDATE_WB_VALID_ARRAY(struct ssdstate *ssd, event_queue_entry* e_q_entry, char new_value);
+void UPDATE_WB_VALID_ARRAY_ENTRY(struct ssdstate *ssd, void* buffer_pointer, char new_value);
+void UPDATE_WB_VALID_ARRAY_PARTIAL(struct ssdstate *ssd, event_queue_entry* e_q_entry, char new_value, int length, int mode);
 
 /* Move Buffer Frame Pointer */
-void INCREASE_WB_SATA_POINTER(int entry_nb);
-void INCREASE_RB_SATA_POINTER(int entry_nb);
-void INCREASE_WB_FTL_POINTER(int entry_nb);
-void INCREASE_RB_FTL_POINTER(int entry_nb);
-void INCREASE_WB_LIMIT_POINTER(void);
-void INCREASE_RB_LIMIT_POINTER(void);
+void INCREASE_WB_SATA_POINTER(struct ssdstate *ssd, int entry_nb);
+void INCREASE_RB_SATA_POINTER(struct ssdstate *ssd, int entry_nb);
+void INCREASE_WB_FTL_POINTER(struct ssdstate *ssd, int entry_nb);
+void INCREASE_RB_FTL_POINTER(struct ssdstate *ssd, int entry_nb);
+void INCREASE_WB_LIMIT_POINTER(struct ssdstate *ssd);
+void INCREASE_RB_LIMIT_POINTER(struct ssdstate *ssd);
 
 /* Test IO BUFFER */
 int COUNT_READ_EVENT(void);

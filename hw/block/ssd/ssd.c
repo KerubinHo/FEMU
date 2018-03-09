@@ -12,6 +12,7 @@
 #include <inttypes.h>
 #include "ftl_inverse_mapping_manager.h"
 #include "vssim_config_manager.h"
+#include "firm_buffer_manager.h"
 #include <time.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -225,7 +226,7 @@ int64_t SSD_WRITE(struct ssdstate *ssd, unsigned int length, int64_t sector_nb)
 	}
 	
 	pthread_mutex_lock(&eq_lock);
-	ENQUEUE_IO(WRITE, sector_nb, length);
+	ENQUEUE_IO(ssd, WRITE, sector_nb, length);
 	pthread_mutex_unlock(&eq_lock);
 
     #ifdef SSD_THREAD_MODE_1
@@ -233,11 +234,18 @@ int64_t SSD_WRITE(struct ssdstate *ssd, unsigned int length, int64_t sector_nb)
     #endif
 
 #elif defined FIRM_IO_BUFFER
-	DEQUEUE_COMPLETED_READ();
+	int64_t max = 0;
+	int64_t cur = 0;
+	DEQUEUE_COMPLETED_READ(ssd);
 	if(EVENT_QUEUE_IS_FULL(WRITE, length)){
-		SECURE_WRITE_BUFFER();
+		cur = SECURE_WRITE_BUFFER(ssd);
 	}
-	ENQUEUE_IO(WRITE, sector_nb, length);
+	if (cur > max)
+		max = cur;
+	cur = ENQUEUE_IO(ssd, READ, sector_nb, length);
+	if (cur > max)
+		max = cur;
+	return max;
 #else
 	return FTL_WRITE(ssd, sector_nb, length);
 #endif
@@ -269,7 +277,7 @@ int64_t SSD_READ(struct ssdstate *ssd, unsigned int length, int64_t sector_nb)
 	}
 
 	pthread_mutex_lock(&eq_lock);
-	ENQUEUE_IO(READ, sector_nb, length);
+	ENQUEUE_IO(ssd, READ, sector_nb, length);
 	pthread_mutex_unlock(&eq_lock);
 
     #ifdef SSD_THREAD_MODE_1
@@ -277,11 +285,18 @@ int64_t SSD_READ(struct ssdstate *ssd, unsigned int length, int64_t sector_nb)
     #endif
 
 #elif defined FIRM_IO_BUFFER
-	DEQUEUE_COMPLETED_READ();
+	int64_t max = 0;
+	int64_t cur = 0;
+	DEQUEUE_COMPLETED_READ(ssd);
 	if(EVENT_QUEUE_IS_FULL(READ, length)){
-		SECURE_READ_BUFFER();
+		cur = SECURE_READ_BUFFER(ssd);
 	}
-	ENQUEUE_IO(READ, sector_nb, length);
+	if (cur > max)
+		max = cur;
+	cur = ENQUEUE_IO(ssd, READ, sector_nb, length);
+	if (cur > max)
+		max = cur;
+	return max;
 #else
 	return FTL_READ(ssd, sector_nb, length);
 #endif

@@ -11,6 +11,8 @@
 //#include "hw.h"
 #include <stdint.h>
 #include "vssim_config_manager.h"1
+#include "common.h"
+#include "firm_buffer_manager.h"
 
 
 //FILE *fp;

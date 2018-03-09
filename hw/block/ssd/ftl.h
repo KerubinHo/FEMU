@@ -10,6 +10,7 @@
 
 #include "common.h"
 #include "vssim_config_manager.h"
+#include "firm_buffer_manager.h"
 #include <stdint.h>
 
 struct ssdstate;

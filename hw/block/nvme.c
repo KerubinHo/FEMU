@@ -988,6 +988,7 @@ static uint16_t nvme_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
     uint64_t elba = slba + nlb;
     uint16_t err;
     int64_t overhead = 0;
+	int64_t ssd_overhead;
     struct ssdstate *ssd = &(n->ssd);
 
     req->data_offset = data_offset;
@@ -1016,12 +1017,14 @@ static uint16_t nvme_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
 
     if (req->is_write) {
         //printf("SSD_WRITE: nlb = %lld, slba=%lld, data_size=%lld, data_offset=%lld\n", nlb, slba, data_size, data_offset);
-        overhead = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - req->expire_time;
-        req->expire_time += 0; //SSD_WRITE(ssd, data_size >> 9, data_offset >> 9) - overhead;
+		ssd_overhead = SSD_WRITE(ssd, data_size >> 9, data_offset >> 9);
+		overhead = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - req->expire_time;
+        req->expire_time += ssd_overhead - overhead;
     } else {
         //printf("SSD_READ: nlb = %lld, slba=%lld, data_size=%lld, data_offset=%lld\n", nlb, slba, data_size, data_offset);
-        overhead = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - req->expire_time;
-        req->expire_time += 0; //SSD_READ(ssd, data_size >> 9 , data_offset >> 9) - overhead;
+		ssd_overhead = SSD_READ(ssd, data_size >> 9, data_offset >> 9);
+		overhead = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - req->expire_time;
+        req->expire_time += ssd_overhead - overhead;
     }
 
     //return NVME_SUCCESS;
